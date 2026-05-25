@@ -1,24 +1,21 @@
-# config.yaml
-# 车辆物理参数
-vehicle:
-  width: 20      # 车辆宽度 (像素)
-  length: 40     # 车辆长度 (像素)
-  wheel_base: 25 # 轴距 (用于阿克曼转向计算)
+carla_host: localhost
+carla_port: 2000
+# 可填真实 CARLA PythonAPI 目录，或课程提供的 fake carla.py 所在目录/文件路径
+carla_pythonapi_path: "../../hutb/PythonAPI/carla/dist"
+vehicle_blueprint: vehicle.lincoln.mkz_2017
 
-# 仿真环境参数
 simulation:
-  width: 800     # 窗口宽度
-  height: 600    # 窗口高度
-  fps: 30        # 帧率
+  width: 800
+  height: 600
+  fps: 30
 
-# 控制器参数 (PID)
 controller:
-  kp: 0.8        # 比例系数
-  kd: 0.1        # 微分系数
-  max_steering_angle: 45 # 最大转向角
+  kp: 0.8
+  ki: 0.0
+  kd: 0.1
+  max_steering_angle: 45
+  default_throttle: 0.3
 
-# 视觉参数
 vision:
-  roi_y_start: 300 # 感兴趣区域起始Y坐标 (只看车头前方)
   canny_thresh1: 50
   canny_thresh2: 150
