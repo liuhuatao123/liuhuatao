@@ -80,6 +80,8 @@ title: 主页
 
 [__setup_tool模块汇报文档__](./setup_tool/report.md) - setup_tool 模块背景、改进内容、运行方式与效果总结
 
+[__视觉泊车__](./vision_based_parking/README.md) - 基于 CARLA 的视觉泊车与路径规划系统
+
 ## 规划 <span id="planning"></span>
 
 [__导航__](#navigation)
