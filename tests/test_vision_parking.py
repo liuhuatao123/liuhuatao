@@ -33,8 +33,8 @@ def test_load_config_resolves_relative_to_module_dir(tmp_path):
     try:
         os.chdir(tmp_path)
         spec = importlib.util.spec_from_file_location(
-            'main_planner',
-            vision_root / 'main_planner.py',
+            'main',
+            vision_root / 'main.py',
         )
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
@@ -89,8 +89,8 @@ def test_connect_carla_raises_runtime_error_for_incomplete_stub(tmp_path, monkey
     sys.modules.pop('carla', None)
 
     spec = importlib.util.spec_from_file_location(
-        'main_planner',
-        vision_root / 'main_planner.py',
+        'main',
+        vision_root / 'main.py',
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
