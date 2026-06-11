@@ -86,6 +86,8 @@ title: 主页
 
 [__导航__](#navigation)
 
+[__奖励分析__](./driving_reward_analysis/README.md) - 自动驾驶奖励函数建模与可视化分析
+
 ## 控制  <span id="control"></span>
 
 [PID](#pid)

@@ -52,6 +52,7 @@ nav:
 - 自动驾驶车辆语义分割: 'auto_drive_seg/README.md'
 - 钢铁表面缺陷检测: 'steel_defect_detection/README.md'
 - CARLA 视觉泊车: 'vision_based_parking/README.md'
+- 自动驾驶奖励分析: 'driving_reward_analysis/README.md'
 
 
 # - mdx_math 用于行内公式显示

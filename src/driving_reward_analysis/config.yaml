@@ -1,0 +1,25 @@
+# 自动驾驶奖励函数分析系统配置
+
+# 速度跟踪奖励参数
+speed_reward:
+  target_speed: 25.0      # 目标速度 (m/s)，对应图中峰值位置
+  tolerance: 5.0          # 速度容忍度，控制曲线宽度
+  speed_range: [0, 35]    # 速度分析范围 [min, max]
+
+# 距离控制奖励参数
+distance_reward:
+  safe_distance: 15.0     # 安全距离 (m)，对应图中红色虚线位置
+  critical_distance: 5.0  # 临界距离 (m)，小于此距离时惩罚最大
+  distance_range: [0, 100] # 距离分析范围 [min, max]
+
+# 舒适性奖励参数
+comfort_reward:
+  max_acceleration: 2.0   # 最大加速度 (m/s²)
+  acceleration_range: [-3, 2] # 加速度分析范围 [min, max]
+
+# 可视化配置
+visualization:
+  figure_size: [12, 10]   # 图表尺寸 (宽, 高)
+  dpi: 150                # 输出图片分辨率
+  output_dir: "outputs"   # 输出目录
+  show_plot: false        # 是否显示图表窗口
