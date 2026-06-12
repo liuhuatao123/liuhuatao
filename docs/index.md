@@ -153,6 +153,7 @@ title: 主页
 
 
 # 其他  <span id="other"></span>
+[ 驾驶事故视频识别 ](./carla_temporal_collage/index.md) - 基于 Temporal Collage Prompting 的 CARLA 驾驶事故视频识别系统
 
 [__CARLA IMU 数据采集平台__](./carla_imu/carla_imu.md) — CARLA惯性测量单元数据采集与可视化驾驶平台开发汇报文档
 
