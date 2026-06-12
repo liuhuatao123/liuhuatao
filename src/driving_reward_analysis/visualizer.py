@@ -13,6 +13,7 @@ plt.rcParams["axes.unicode_minus"] = False
 def plot_reward_curves(
     output_dir: str,
     config: dict,
+    prefix: str = "",
 ) -> str:
     """绘制三类奖励函数的理论曲线.
 
@@ -93,7 +94,7 @@ def plot_reward_curves(
                  fontsize=15, fontweight="bold", y=1.02)
     plt.tight_layout()
 
-    save_path = os.path.join(output_dir, "reward_func_analysis.png")
+    save_path = os.path.join(output_dir, f"{prefix}reward_func_analysis.png")
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[Saved] {save_path}")
@@ -103,6 +104,7 @@ def plot_reward_curves(
 def plot_scenario_rewards(
     rewards: dict,
     output_dir: str,
+    prefix: str = "",
 ) -> str:
     """绘制场景仿真中的奖励变化曲线.
 
@@ -139,7 +141,7 @@ def plot_scenario_rewards(
                  fontsize=14, fontweight="bold", y=1.01)
     plt.tight_layout()
 
-    save_path = os.path.join(output_dir, "reward_comparison.png")
+    save_path = os.path.join(output_dir, f"{prefix}reward_comparison.png")
     fig.savefig(save_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"[Saved] {save_path}")
