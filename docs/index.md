@@ -112,8 +112,6 @@ title: 主页
 
 [__用户使用手势控制 Airsim 无人机__](./drone_hand_gesture/README.md) - 使用手势识别控制 Airsim 无人机飞行
 
-[__用户使用手势控制 Airsim 无人机__](./drone_hand_gesture/README.md) - 使用手势识别控制 Airsim 无人机飞行
-
 [__V2X路侧智能感知__](./edge_intelligence_V2X/README.md) - 基于YOLOv8n的V2X路侧智能感知系统优化与实现
 
 [PID](#pid)
