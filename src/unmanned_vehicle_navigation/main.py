@@ -31,6 +31,12 @@ class SimpleController:
         self.total_distance = 0.0  # 总行驶里程（米）
         self.last_location = None  # 上一次位置
         self.trip_distance = 0.0  # 本次行程里程（米）
+        # 手动驾驶相关
+        self.manual_mode = False  # 手动驾驶模式标志
+        self.manual_throttle = 0.0  # 手动油门
+        self.manual_brake = 0.0  # 手动刹车
+        self.manual_steer = 0.0  # 手动转向
+        self.steer_sensitivity = 0.1  # 转向灵敏度
 
     def get_control(self):
         """基于路点的简单控制"""
@@ -154,6 +160,43 @@ class SimpleController:
         """重置本次行程里程"""
         self.trip_distance = 0.0
         print("行程里程已重置")
+
+    # 手动驾驶相关方法
+    def toggle_manual_mode(self):
+        """切换手动/自动驾驶模式"""
+        self.manual_mode = not self.manual_mode
+        if self.manual_mode:
+            print("进入手动驾驶模式")
+            print("手动控制指令:")
+            print("  W - 加速")
+            print("  S - 刹车")
+            print("  A - 左转")
+            print("  D - 右转")
+            print("  M - 切换回自动模式")
+        else:
+            print("退出手动驾驶模式，恢复自动驾驶")
+
+    def is_manual_mode(self):
+        """检查是否在手动驾驶模式"""
+        return self.manual_mode
+
+    def set_manual_throttle(self, value):
+        """设置手动油门值（0.0-1.0）"""
+        self.manual_throttle = max(0.0, min(1.0, value))
+
+    def set_manual_brake(self, value):
+        """设置手动刹车值（0.0-1.0）"""
+        self.manual_brake = max(0.0, min(1.0, value))
+
+    def set_manual_steer(self, value):
+        """设置手动转向值（-1.0到1.0）"""
+        self.manual_steer = max(-1.0, min(1.0, value))
+
+    def reset_manual_control(self):
+        """重置手动控制值"""
+        self.manual_throttle = 0.0
+        self.manual_brake = 0.0
+        self.manual_steer = 0.0
 
 
 class WeatherManager:
@@ -285,15 +328,15 @@ class WeatherManager:
         return self.set_weather(weather_list[next_index])
     
     def get_weather_name(self, weather_key):
-        """获取天气中文名"""
+        """获取天气英文名"""
         names = {
-            'sunny': '晴天',
-            'cloudy': '多云',
-            'rainy': '雨天',
-            'stormy': '暴风雨',
-            'snowy': '雪天',
-            'foggy': '雾天',
-            'night': '夜晚'
+            'sunny': 'Sunny',
+            'cloudy': 'Cloudy',
+            'rainy': 'Rainy',
+            'stormy': 'Stormy',
+            'snowy': 'Snowy',
+            'foggy': 'Foggy',
+            'night': 'Night'
         }
         return names.get(weather_key, weather_key)
     
@@ -393,6 +436,23 @@ class SimpleDrivingSystem:
         self.current_view = 'third_person'  # 当前视角模式：'first_person', 'third_person', 'birdseye'
         self.weather_manager = None  # 天气管理器
         self.lidar_manager = None  # LiDAR传感器管理器
+        # 碰撞检测相关
+        self.collision_detected = False  # 是否检测到碰撞
+        self.collision_count = 0  # 碰撞次数
+        self.last_collision_time = 0  # 上次碰撞时间
+        # 场景统计相关
+        self.frame_count = 0  # 帧数计数器
+        self.fps = 0  # 当前帧率
+        self.last_fps_time = time.time()  # 上次计算帧率的时间
+        # 车灯控制相关
+        self.headlights_on = False  # 车灯是否开启
+        self.auto_headlights = True  # 自动车灯模式
+        # GPS相关
+        self.gps_sensor = None  # GPS传感器
+        self.gps_data = None  # GPS数据
+        self.gps_latitude = 0.0  # 纬度
+        self.gps_longitude = 0.0  # 经度
+        self.gps_altitude = 0.0  # 高度
 
     def connect(self):
         """连接到CARLA服务器"""
@@ -592,6 +652,163 @@ class SimpleDrivingSystem:
         self.controller = SimpleController(self.world, self.vehicle)
         print("控制器设置完成")
 
+    def _setup_collision_sensor(self):
+        """设置碰撞传感器"""
+        print("正在设置碰撞传感器...")
+        
+        try:
+            blueprint_library = self.world.get_blueprint_library()
+            collision_bp = blueprint_library.find('sensor.other.collision')
+            
+            # 在车辆中心位置安装碰撞传感器
+            collision_transform = carla.Transform(carla.Location(x=0, z=0.5))
+            
+            self.collision_sensor = self.world.spawn_actor(
+                collision_bp, collision_transform, attach_to=self.vehicle
+            )
+            
+            self.collision_sensor.listen(lambda event: self._on_collision(event))
+            
+            print("碰撞传感器已启用")
+        except Exception as e:
+            print(f"设置碰撞传感器失败: {e}")
+
+    def _on_collision(self, event):
+        """碰撞事件处理"""
+        current_time = time.time()
+        
+        # 避免重复检测（1秒内的碰撞只记录一次）
+        if current_time - self.last_collision_time < 1.0:
+            return
+        
+        self.collision_detected = True
+        self.collision_count += 1
+        self.last_collision_time = current_time
+        
+        print(f"⚠️ 碰撞检测！碰撞次数: {self.collision_count}")
+        
+        # 紧急停车
+        self.vehicle.apply_control(carla.VehicleControl(
+            throttle=0.0, brake=1.0, hand_brake=True
+        ))
+        
+        # 3秒后恢复
+        self._schedule_recovery()
+
+    def _schedule_recovery(self):
+        """调度恢复"""
+        def recover():
+            self.collision_detected = False
+            print("恢复行驶...")
+        
+        # 使用定时器在3秒后恢复
+        import threading
+        timer = threading.Timer(3.0, recover)
+        timer.start()
+
+    def get_scene_statistics(self):
+        """获取场景统计信息"""
+        stats = {}
+        
+        if self.world:
+            # 统计NPC车辆数量
+            npc_vehicles = self.world.get_actors().filter('vehicle.*')
+            # 排除自己的车辆
+            if self.vehicle:
+                stats['npc_count'] = len([v for v in npc_vehicles if v.id != self.vehicle.id])
+            else:
+                stats['npc_count'] = len(npc_vehicles)
+            
+            # 统计行人数量
+            pedestrians = self.world.get_actors().filter('walker.*')
+            stats['pedestrian_count'] = len(pedestrians)
+        else:
+            stats['npc_count'] = 0
+            stats['pedestrian_count'] = 0
+        
+        # 计算帧率
+        self.frame_count += 1
+        current_time = time.time()
+        elapsed = current_time - self.last_fps_time
+        
+        if elapsed >= 1.0:
+            self.fps = int(self.frame_count / elapsed)
+            self.frame_count = 0
+            self.last_fps_time = current_time
+        
+        stats['fps'] = self.fps
+        
+        return stats
+
+    def toggle_headlights(self):
+        """切换车灯状态"""
+        self.headlights_on = not self.headlights_on
+        self.auto_headlights = False  # 手动切换时关闭自动模式
+        self._apply_headlights()
+        print(f"车灯状态: {'开启' if self.headlights_on else '关闭'}")
+
+    def set_auto_headlights(self, auto):
+        """设置自动车灯模式"""
+        self.auto_headlights = auto
+        if auto:
+            self._update_auto_headlights()
+
+    def _apply_headlights(self):
+        """应用车灯状态到车辆"""
+        if self.vehicle:
+            light_state = carla.VehicleLightState.NONE
+            if self.headlights_on:
+                light_state = carla.VehicleLightState.Position | carla.VehicleLightState.LowBeam | carla.VehicleLightState.HighBeam
+            self.vehicle.set_light_state(carla.VehicleLightState(light_state))
+
+    def _update_auto_headlights(self):
+        """根据天气自动更新车灯"""
+        if not self.auto_headlights or not self.weather_manager:
+            return
+        
+        # 在夜晚、雾天、雨天、暴风雨时自动开启车灯
+        weather = self.weather_manager.current_weather
+        auto_on_weathers = ['night', 'foggy', 'rainy', 'stormy']
+        
+        should_be_on = weather in auto_on_weathers
+        
+        if should_be_on != self.headlights_on:
+            self.headlights_on = should_be_on
+            self._apply_headlights()
+
+    def _setup_gps_sensor(self):
+        """设置GPS传感器"""
+        blueprint_library = self.world.get_blueprint_library()
+        gps_bp = blueprint_library.find('sensor.other.gnss')
+        
+        # 设置GPS传感器参数
+        gps_bp.set_attribute('noise_alt_stddev', '0.0')
+        gps_bp.set_attribute('noise_lat_stddev', '0.0')
+        gps_bp.set_attribute('noise_lon_stddev', '0.0')
+        
+        # 安装在车辆顶部
+        gps_transform = carla.Transform(carla.Location(x=0.0, y=0.0, z=2.0))
+        
+        self.gps_sensor = self.world.spawn_actor(gps_bp, gps_transform, attach_to=self.vehicle)
+        self.gps_sensor.listen(lambda data: self._process_gps_data(data))
+        
+        print("GPS传感器已启用")
+
+    def _process_gps_data(self, data):
+        """处理GPS数据"""
+        self.gps_data = data
+        self.gps_latitude = data.latitude
+        self.gps_longitude = data.longitude
+        self.gps_altitude = data.altitude
+
+    def get_gps_coordinates(self):
+        """获取GPS坐标"""
+        return {
+            'latitude': self.gps_latitude,
+            'longitude': self.gps_longitude,
+            'altitude': self.gps_altitude
+        }
+
     def run(self):
         """主运行循环"""
         print("\n" + "=" * 50)
@@ -633,6 +850,12 @@ class SimpleDrivingSystem:
         # 初始化LiDAR传感器
         self.lidar_manager = LiDARManager(self.world, self.vehicle)
 
+        # 初始化碰撞传感器
+        self._setup_collision_sensor()
+
+        # 初始化GPS传感器
+        self._setup_gps_sensor()
+
         # 生成一些NPC车辆
         self.spawn_npc_vehicles(2)
 
@@ -643,10 +866,18 @@ class SimpleDrivingSystem:
         print("  s - 紧急停止")
         print("  x - 切换倒车/前进模式（速度为0时生效）")
         print("  v - 切换视角（第一人称/第三人称/鸟瞰图）")
-        print("  w - 切换天气（晴天/多云/雨天/暴风雨/雪天/雾天/夜晚）")
+        print("  p - 切换天气（晴天/多云/雨天/暴风雨/雪天/雾天/夜晚）")
         print("  + - 增加速度限制")
         print("  - - 减少速度限制")
         print("  t - 重置行程里程")
+        print("  m - 切换手动/自动驾驶模式")
+        print("  l - 切换车灯（手动模式）")
+        print("  a - 切换自动车灯模式")
+        print("\n手动驾驶模式控制:")
+        print("  W - 加速")
+        print("  S - 刹车")
+        print("  A - 左转")
+        print("  D - 右转")
         print("\n感知与避障系统已启用:")
         print("  - LiDAR检测范围: 50米")
         print("  - 警告距离: 15米")
@@ -661,6 +892,8 @@ class SimpleDrivingSystem:
                 # 定期刷新天气，防止CARLA自动改变天气参数
                 if self.weather_manager:
                     self.weather_manager.tick()
+                    # 更新自动车灯
+                    self._update_auto_headlights()
 
                 # 获取车辆状态
                 velocity = self.vehicle.get_velocity()
@@ -670,12 +903,19 @@ class SimpleDrivingSystem:
                 current_location = self.vehicle.get_location()
                 self.controller.update_distance(current_location)
 
-                # 获取控制指令（现在返回4个值，原代码返回3个值）
-                # throttle, brake, steer = self.controller.get_control()  # 原代码
-                throttle, brake, steer, reverse = self.controller.get_control()  # 新代码
+                # 获取控制指令
+                if self.controller.is_manual_mode():
+                    # 手动驾驶模式：使用手动控制值
+                    throttle = self.controller.manual_throttle
+                    brake = self.controller.manual_brake
+                    steer = self.controller.manual_steer
+                    reverse = self.controller.manual_reverse
+                else:
+                    # 自动驾驶模式：使用自动控制
+                    throttle, brake, steer, reverse = self.controller.get_control()
 
-                # LiDAR避障控制
-                if self.lidar_manager:
+                # LiDAR避障控制（仅在自动驾驶模式下生效）
+                if self.lidar_manager and not self.controller.is_manual_mode():
                     warning_level = self.lidar_manager.get_warning_level()
                     if warning_level == 'danger':
                         throttle = 0.0
@@ -719,6 +959,12 @@ class SimpleDrivingSystem:
                                     (20, 200), cv2.FONT_HERSHEY_SIMPLEX,
                                     0.8, (0, 0, 255), 2)  # 红色显示
                     
+                    # 显示手动驾驶模式
+                    if self.controller.is_manual_mode():
+                        cv2.putText(display_img, "MANUAL MODE",
+                                    (20, 200), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (0, 255, 255), 2)  # 青色显示
+                    
                     # 显示当前视角模式
                     cv2.putText(display_img, f"View: {self.get_view_name()}",
                                 (20, 240), cv2.FONT_HERSHEY_SIMPLEX,
@@ -746,6 +992,16 @@ class SimpleDrivingSystem:
                                 (20, 400), cv2.FONT_HERSHEY_SIMPLEX,
                                 0.8, (255, 0, 255), 2)  # 粉色显示
                     
+                    # 显示碰撞检测状态
+                    if self.collision_detected:
+                        cv2.putText(display_img, f"⚠️ COLLISION! Count: {self.collision_count}",
+                                    (20, 440), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (0, 0, 255), 2)  # 红色显示
+                    else:
+                        cv2.putText(display_img, f"Collisions: {self.collision_count}",
+                                    (20, 440), cv2.FONT_HERSHEY_SIMPLEX,
+                                    0.8, (0, 255, 0), 2)  # 绿色显示
+                    
                     # 显示LiDAR距离和警告
                     if self.lidar_manager:
                         min_dist = self.lidar_manager.get_min_distance()
@@ -763,6 +1019,37 @@ class SimpleDrivingSystem:
                             cv2.putText(display_img, f"Distance: {min_dist:.1f}m",
                                         (20, 360), cv2.FONT_HERSHEY_SIMPLEX,
                                         0.8, (0, 255, 0), 2)  # 绿色安全
+
+                    # 显示场景统计信息（右上角）
+                    stats = self.get_scene_statistics()
+                    start_x = display_img.shape[1] - 200
+                    start_y = 40
+                    cv2.putText(display_img, f"FPS: {stats['fps']}",
+                                (start_x, start_y), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, (0, 255, 0), 2)  # 绿色显示
+                    cv2.putText(display_img, f"NPC: {stats['npc_count']}",
+                                (start_x, start_y + 30), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, (0, 128, 255), 2)  # 蓝色显示
+                    cv2.putText(display_img, f"Peds: {stats['pedestrian_count']}",
+                                (start_x, start_y + 60), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, (0, 128, 255), 2)  # 蓝色显示
+
+                    # 显示车灯状态
+                    light_text = f"Light: {'ON' if self.headlights_on else 'OFF'}"
+                    if self.auto_headlights:
+                        light_text += " (Auto)"
+                    cv2.putText(display_img, light_text,
+                                (start_x, start_y + 90), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.7, (255, 255, 0) if self.headlights_on else (128, 128, 128), 2)
+
+                    # 显示GPS坐标
+                    gps_coords = self.get_gps_coordinates()
+                    cv2.putText(display_img, f"GPS: {gps_coords['latitude']:.6f}",
+                                (start_x, start_y + 120), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (255, 200, 100), 2)  # 橙色显示纬度
+                    cv2.putText(display_img, f"     {gps_coords['longitude']:.6f}",
+                                (start_x, start_y + 145), cv2.FONT_HERSHEY_SIMPLEX,
+                                0.6, (255, 200, 100), 2)  # 橙色显示经度
 
                     cv2.imshow('Autonomous Driving - Simple Version', display_img)
 
@@ -792,7 +1079,7 @@ class SimpleDrivingSystem:
                     next_index = (current_index + 1) % len(view_modes)
                     self.current_view = view_modes[next_index]
                     self.update_camera_view()
-                elif key == ord('w'):
+                elif key == ord('p'):
                     # 切换天气模式
                     if self.weather_manager:
                         self.weather_manager.cycle_weather()
@@ -805,6 +1092,33 @@ class SimpleDrivingSystem:
                 elif key == ord('t') or key == ord('T'):
                     # 重置行程里程
                     self.controller.reset_trip()
+                elif key == ord('m') or key == ord('M'):
+                    # 切换手动/自动驾驶模式
+                    self.controller.toggle_manual_mode()
+                elif key == ord('l') or key == ord('L'):
+                    # 切换车灯状态
+                    self.toggle_headlights()
+                elif key == ord('a') or key == ord('A'):
+                    # 切换自动车灯模式（注意：手动模式下A键用于左转）
+                    if not self.controller.is_manual_mode():
+                        self.set_auto_headlights(not self.auto_headlights)
+                        print(f"自动车灯模式: {'开启' if self.auto_headlights else '关闭'}")
+                
+                # 手动驾驶控制（仅在手动模式下生效）
+                if self.controller.is_manual_mode():
+                    if key == ord('w') or key == ord('W'):
+                        self.controller.set_manual_throttle(self.controller.manual_throttle + 0.1)
+                        self.controller.set_manual_brake(0.0)
+                    elif key == ord('s') or key == ord('S'):
+                        self.controller.set_manual_brake(self.controller.manual_brake + 0.1)
+                        self.controller.set_manual_throttle(0.0)
+                    elif key == ord('a') or key == ord('A'):
+                        self.controller.set_manual_steer(self.controller.manual_steer - 0.1)
+                    elif key == ord('d') or key == ord('D'):
+                        self.controller.set_manual_steer(self.controller.manual_steer + 0.1)
+                    else:
+                        # 没有按键时，转向回中
+                        self.controller.set_manual_steer(self.controller.manual_steer * 0.9)
 
                 frame_count += 1
 
@@ -878,6 +1192,24 @@ class SimpleDrivingSystem:
         if self.lidar_manager:
             try:
                 self.lidar_manager.destroy()
+            except:
+                pass
+
+        # 清理碰撞传感器
+        if hasattr(self, 'collision_sensor') and self.collision_sensor:
+            try:
+                self.collision_sensor.stop()
+                self.collision_sensor.destroy()
+                print("碰撞传感器已销毁")
+            except:
+                pass
+
+        # 清理GPS传感器
+        if self.gps_sensor:
+            try:
+                self.gps_sensor.stop()
+                self.gps_sensor.destroy()
+                print("GPS传感器已销毁")
             except:
                 pass
 

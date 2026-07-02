@@ -1,6 +1,7 @@
 import os
 import time
 from typing import Optional, Tuple
+import numpy as np
 
 import mujoco
 import mujoco.viewer
@@ -15,6 +16,11 @@ CONFIG = {
     "gravity": (0.0, 0.0, -9.81),
     "target_fps": 60,
     "print_interval": 1.0,  # 打印间隔(秒)
+    # 新增配置项
+    "auto_swing_enable": True,       # 自动腿部周期摆动开关
+    "joint_swing_amp": 0.2,          # 降低摆动幅度，防止失衡
+    "swing_freq": 0.8,               # 降低摆动频率
+    "show_body_vel": True,           # 打印机身线速度
 }
 
 # ===================== 模型加载 =====================
@@ -33,6 +39,8 @@ def load_mujoco_model(model_path: str) -> Optional[Tuple[mujoco.MjModel, mujoco.
         model = mujoco.MjModel.from_xml_path(abs_path)
         data = mujoco.MjData(model)
         print(f"✅ 模型加载成功：{abs_path}")
+        # 新增：打印模型基础信息（机身、关节数量）
+        print(f"📊 模型信息：机身总数={model.nbody}, 关节总数={model.njnt}, 执行器数量={model.nu}")
         return model, data
     except Exception as e:
         print(f"❌ 模型加载失败：{e}")
@@ -40,24 +48,102 @@ def load_mujoco_model(model_path: str) -> Optional[Tuple[mujoco.MjModel, mujoco.
 
 # ===================== 机器人初始化 =====================
 def configure_robot(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-    """配置机器人初始状态与仿真参数"""
+    """配置机器人初始状态与仿真参数【修复：改用data.qpos设置初始位姿】"""
     base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, CONFIG["base_body"])
 
-    if base_id >= 0:
-        model.body_pos[base_id][:3] = CONFIG["base_pos"]
-        model.body_quat[base_id][:4] = CONFIG["base_quat"]
+    # 【修复1】不要修改model.body_pos，修改data.qpos才是仿真初始状态
+    data.qpos[:3] = CONFIG["base_pos"]
+    data.qpos[3:7] = CONFIG["base_quat"]
+    data.qvel[:] = 0.0
+    data.ctrl[:] = 0.0
 
     # 仿真参数
     model.opt.timestep = CONFIG["time_step"]
     model.opt.gravity[:] = CONFIG["gravity"]
 
-    # 控制量清零
+    # 【修复2】强制前向动力学，刷新碰撞、重心、肢体位置，防止初始穿模掉落
+    mujoco.mj_forward(model, data)
+
+# ===================== 新增：自动腿部摆动逻辑（优化，避免整体失衡掉落） =====================
+def auto_swing_control(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """自动周期性腿部摆动，分相位摆动，避免四条腿同步下压导致机身下坠"""
+    if not CONFIG["auto_swing_enable"]:
+        data.ctrl[:] = 0.0
+        return
+    t = data.time
+    amp = CONFIG["joint_swing_amp"]
+    freq = CONFIG["swing_freq"]
+
+    # 【修复3】四条腿分相位错开摆动，不会同时向下挤压机身
+    phase_fl = 0.0
+    phase_fr = np.pi
+    phase_rl = np.pi
+    phase_rr = 0.0
+
+    swing_fl = amp * np.sin(2 * np.pi * freq * t + phase_fl)
+    swing_fr = amp * np.sin(2 * np.pi * freq * t + phase_fr)
+    swing_rl = amp * np.sin(2 * np.pi * freq * t + phase_rl)
+    swing_rr = amp * np.sin(2 * np.pi * freq * t + phase_rr)
+
+    # Anymal C 前6个执行器：FL_HAA, FL_HFE, FL_KFE, FR_HAA, FR_HFE, FR_KFE
+    data.ctrl[0] = swing_fl
+    data.ctrl[1] = swing_fl * 0.6
+    data.ctrl[2] = swing_fl * 0.8
+    data.ctrl[3] = swing_fr
+    data.ctrl[4] = swing_fr * 0.6
+    data.ctrl[5] = swing_fr * 0.8
+
+    # 后腿如果有执行器继续错开，无则忽略
+    if model.nu > 6:
+        data.ctrl[6] = swing_rl
+        data.ctrl[7] = swing_rl * 0.6
+        data.ctrl[8] = swing_rl * 0.8
+        data.ctrl[9] = swing_rr
+        data.ctrl[10] = swing_rr * 0.6
+        data.ctrl[11] = swing_rr * 0.8
+
+# ===================== 重置机器人姿态函数 =====================
+def reset_robot(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """恢复机器人初始基座、关节、速度、仿真时间【同步修复重置逻辑】"""
+    data.qpos[:] = 0.0
+    data.qpos[0:3] = CONFIG["base_pos"]
+    data.qpos[3:7] = CONFIG["base_quat"]
+    data.qvel[:] = 0.0
+    data.time = 0.0
     data.ctrl[:] = 0.0
+    # 重置后必须刷新动力学
+    mujoco.mj_forward(model, data)
+    print("🔄 已重置机器人初始姿态")
+
+# ===================== 新增：自动腿部摆动逻辑（移除按键依赖） =====================
+def auto_swing_control(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """自动周期性腿部摆动，无键盘依赖"""
+    if not CONFIG["auto_swing_enable"]:
+        data.ctrl[:6] = 0.0
+        return
+    t = data.time
+    amp = CONFIG["joint_swing_amp"]
+    freq = CONFIG["swing_freq"]
+    swing_val = amp * np.sin(2 * np.pi * freq * t)
+    data.ctrl[:6] = swing_val
+
+# ===================== 重置机器人姿态函数 =====================
+def reset_robot(model: mujoco.MjModel, data: mujoco.MjData) -> None:
+    """恢复机器人初始基座、关节、速度、仿真时间"""
+    base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, CONFIG["base_body"])
+    data.qpos[:] = 0.0
+    data.qpos[0:3] = CONFIG["base_pos"]
+    data.qpos[3:7] = CONFIG["base_quat"]
+    data.qvel[:] = 0.0
+    data.time = 0.0
+    data.ctrl[:] = 0.0
+    print("🔄 已重置机器人初始姿态")
 
 # ===================== 仿真主循环 =====================
 def run_simulation(model: mujoco.MjModel, data: mujoco.MjData) -> None:
     """运行稳定帧率仿真"""
     print("✅ 仿真启动成功 | 关闭窗口退出")
+    print("ℹ️  自动摆动说明：修改CONFIG['auto_swing_enable']可开关腿部周期运动；调用reset_robot()可复位机器人")
     frame_interval = 1.0 / CONFIG["target_fps"]
     print_timer = 0.0
     sim_start_time = time.perf_counter()
@@ -66,6 +152,9 @@ def run_simulation(model: mujoco.MjModel, data: mujoco.MjData) -> None:
         while viewer.is_running():
             t_start = time.perf_counter()
             current_sim_time = data.time
+
+            # 执行自动腿部摆动控制
+            auto_swing_control(model, data)
 
             # 仿真步进
             mujoco.mj_step(model, data)
@@ -77,6 +166,11 @@ def run_simulation(model: mujoco.MjModel, data: mujoco.MjData) -> None:
                 print(f"【运行时长】{run_duration:.2f}s | 仿真时间: {current_sim_time:.2f}s")
                 joint_qpos = data.qpos[7:]  # 前7维为基座位姿，后续为关节
                 print(f"【关节角度】{joint_qpos[:6].round(3)}")
+                # 新增：机身线速度打印
+                if CONFIG["show_body_vel"]:
+                    base_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, CONFIG["base_body"])
+                    body_lin_vel = data.cvel[base_id][3:6]
+                    print(f"【机身线速度】x:{body_lin_vel[0]:.3f} y:{body_lin_vel[1]:.3f} z:{body_lin_vel[2]:.3f}")
                 print_timer = current_sim_time
 
             # 帧率控制

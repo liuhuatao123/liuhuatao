@@ -8,7 +8,7 @@ import math
 import random
 import re
 import weakref
-import json  # 新增：JSON处理
+import json
 from pathlib import Path
 
 # ========== 全局常量 ==========
@@ -32,7 +32,10 @@ sys.path.append(str(carla_api_full_path))
 # ========== 第三方库导入 ==========
 try:
     import pygame
-    from pygame.locals import KMOD_CTRL, K_ESCAPE, K_q, K_r, K_h, K_f  # 新增：F键常量
+    from pygame.locals import (
+        KMOD_CTRL, K_ESCAPE, K_q, K_r, K_h, K_f, K_p, K_w,
+        K_s, K_MINUS, K_EQUALS
+    )
 except ImportError:
     raise RuntimeError("请安装pygame: pip install pygame")
 
@@ -57,9 +60,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ========== 新增：行驶日志记录器 ==========
+# ========== 行驶日志记录器 ==========
 class DrivingLogger:
     """自动记录行驶数据到CSV文件"""
+
     def __init__(self):
         self.log_dir = Path(LOG_SAVE_DIR)
         self.log_dir.mkdir(exist_ok=True)
@@ -69,7 +73,11 @@ class DrivingLogger:
         self.last_collision_frame = -1
 
     def _init_header(self):
-        headers = ["timestamp", "x", "y", "z", "speed_kmh", "is_collision", "target_reached"]
+        headers = [
+            "timestamp", "x", "y", "z", "speed_kmh",
+            "is_collision", "target_reached",
+            "max_speed_kmh", "speed_limit_enabled"
+        ]
         with open(self.log_file, "w", encoding="utf-8", newline="") as f:
             f.write(",".join(headers) + "\n")
 
@@ -95,7 +103,9 @@ class DrivingLogger:
             f"{transform.location.z:.2f}",
             f"{speed:.1f}",
             str(is_collision),
-            str(target_count)
+            str(target_count),
+            str(world.max_speed_kmh),
+            str(1 if world.speed_limit_enabled else 0)
         ]
         with open(self.log_file, "a", encoding="utf-8", newline="") as f:
             f.write(",".join(row) + "\n")
@@ -103,9 +113,10 @@ class DrivingLogger:
     def get_file_path(self):
         return str(self.log_file)
 
-# ========== 新增：轨迹记录器（JSON格式） ==========
+# ========== 轨迹记录器 ==========
 class TrajectoryLogger:
     """记录车辆完整行驶轨迹为JSON文件，支持实时追加和最终格式化"""
+
     def __init__(self):
         self.log_dir = Path(LOG_SAVE_DIR)
         self.log_dir.mkdir(exist_ok=True)
@@ -153,6 +164,10 @@ class TrajectoryLogger:
                 "roll": round(transform.rotation.roll, 2)
             },
             "speed_kmh": round(speed, 1),
+            "speed_limit": {
+                "max_speed_kmh": world.max_speed_kmh,
+                "enabled": world.speed_limit_enabled
+            },
             "is_collision": is_collision,
             "target_reached_count": target_count
         }
@@ -162,7 +177,7 @@ class TrajectoryLogger:
         self.trajectory_data["metadata"]["total_frames"] = len(self.trajectory_data["frames"])
         self.trajectory_data["metadata"]["target_reached_count"] = target_count
 
-        # 实时保存（轻量化写入）
+        # 实时保存
         self._save_to_file()
 
     def _save_to_file(self):
@@ -175,29 +190,29 @@ class TrajectoryLogger:
         return str(self.traj_file)
 
     def finalize(self):
-        """程序结束时最终化数据（补充结束时间）"""
+        """程序结束时最终化数据"""
         self.trajectory_data["metadata"]["end_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
         self._save_to_file()
         logger.info(f"轨迹日志已最终化，共记录 {self.trajectory_data['metadata']['total_frames']} 帧")
 
-# ========== 新增：车辆状态快照记录器【核心新增功能】 ==========
+# ========== 车辆状态快照记录器 ==========
 class StateSnapshotLogger:
-    """手动触发保存车辆状态快照（按F键）"""
+    """手动触发保存车辆状态快照"""
+
     def __init__(self):
-        self.log_dir = Path(LOG_SAVE_DIR) / "snapshots"  # 快照单独文件夹
+        self.log_dir = Path(LOG_SAVE_DIR) / "snapshots"
         self.log_dir.mkdir(exist_ok=True, parents=True)
-        self.snapshot_count = 0  # 快照计数器
+        self.snapshot_count = 0
 
     def save_snapshot(self, world, target_count):
         """保存单次车辆状态快照"""
         self.snapshot_count += 1
-        # 构建快照数据
         transform = world.player.get_transform()
         vel = world.player.get_velocity()
         acc = world.player.get_acceleration()
         control = world.player.get_control()
         speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
-        
+
         # 碰撞判断
         collision_hist = world.collision_sensor.get_collision_history()
         current_frame = world.hud.frame
@@ -239,6 +254,10 @@ class StateSnapshotLogger:
                 "hand_brake": control.hand_brake,
                 "gear": control.gear
             },
+            "speed_limit": {
+                "max_speed_kmh": world.max_speed_kmh,
+                "enabled": world.speed_limit_enabled
+            },
             "status": {
                 "is_collision": is_collision,
                 "target_reached_count": target_count,
@@ -252,7 +271,7 @@ class StateSnapshotLogger:
         snap_file = self.log_dir / f"vehicle_snapshot_{time_str}_{self.snapshot_count}.json"
         with open(snap_file, "w", encoding="utf-8") as f:
             json.dump(snapshot_data, f, ensure_ascii=False, indent=2)
-        
+
         return str(snap_file), self.snapshot_count
 
 # ========== 工具函数 ==========
@@ -260,11 +279,13 @@ def get_random_destination(current_loc, spawn_points):
     """获取非当前位置的随机目的地，兼容浮点误差"""
     if not spawn_points:
         raise ValueError("无可用生成点")
+
     valid_points = [
         p for p in spawn_points
-        if math.hypot(p.location.x - current_loc.x, p.location.y - current_loc.y) > 2.0
+        if math.hypot(p.location.x - current_loc.x, p.location.y - current_loc.y) > 50.0
     ]
     return random.choice(valid_points).location if valid_points else spawn_points[0].location
+
 
 def find_weather_presets():
     rgx = re.compile('.+?(?:(?<=[a-z])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])|$)')
@@ -272,12 +293,14 @@ def find_weather_presets():
     presets = [x for x in dir(carla.WeatherParameters) if re.match('[A-Z].+', x)]
     return [(getattr(carla.WeatherParameters, x), name(x)) for x in presets]
 
+
 def get_actor_display_name(actor, truncate=250):
     name = ' '.join(actor.type_id.replace('_', '.').title().split('.')[1:])
     return (name[:truncate - 1] + u'\u2026') if len(name) > truncate else name
 
 # ========== World类 ==========
 class World(object):
+
     def __init__(self, carla_world, hud, args):
         self.world = carla_world
         self.hud = hud
@@ -290,6 +313,18 @@ class World(object):
         self._weather_index = 0
         self._actor_filter = args.filter
         self._gamma = args.gamma
+
+        # 暂停状态
+        self.is_paused = False
+        # 天气自动切换
+        self.auto_weather = args.auto_weather
+        self.weather_interval = args.weather_interval
+        self.last_weather_switch = datetime.datetime.now()
+        # 目标点
+        self.target_location = None
+        # 限速功能
+        self.max_speed_kmh = args.max_speed
+        self.speed_limit_enabled = True
 
         try:
             self.map = self.world.get_map()
@@ -346,6 +381,10 @@ class World(object):
         self.camera_manager.transform_index = cam_pos_id
         self.camera_manager.set_sensor(cam_index, notify=False)
 
+        # 初始化随机天气
+        self._weather_index = random.randint(0, len(self._weather_presets) - 1)
+        self.next_weather()
+
         actor_type = get_actor_display_name(self.player)
         self.hud.notification(actor_type)
 
@@ -355,8 +394,54 @@ class World(object):
         preset = self._weather_presets[self._weather_index]
         self.hud.notification('Weather: %s' % preset[1])
         self.player.get_world().set_weather(preset[0])
+        self.last_weather_switch = datetime.datetime.now()
 
-    # 重置车辆到最近的生成点
+    def get_distance_to_target(self):
+        """计算到目标点的平面距离"""
+        if not self.player or not self.target_location:
+            return 0.0
+        current_loc = self.player.get_location()
+        return math.hypot(
+            current_loc.x - self.target_location.x,
+            current_loc.y - self.target_location.y
+        )
+
+    def apply_speed_limit(self, control):
+        """应用限速控制，修改车辆控制指令"""
+        if not self.speed_limit_enabled:
+            return control
+
+        vel = self.player.get_velocity()
+        current_speed = 3.6 * math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)
+
+        # 超过限速时调整控制
+        if current_speed > self.max_speed_kmh:
+            over_speed = current_speed - self.max_speed_kmh
+            throttle_reduction = min(0.8, over_speed / 20.0)
+            brake_increase = min(0.5, over_speed / 40.0)
+
+            control.throttle = max(0.0, control.throttle - throttle_reduction)
+            control.brake = min(1.0, control.brake + brake_increase)
+
+            if current_speed > self.max_speed_kmh + 10:
+                control.brake = min(1.0, control.brake + 0.3)
+
+        return control
+
+    def adjust_speed_limit(self, delta):
+        """调整限速值（delta为增量，单位km/h）"""
+        new_speed = self.max_speed_kmh + delta
+        self.max_speed_kmh = max(10, min(120, new_speed))
+        self.hud.notification(f"当前限速: {self.max_speed_kmh} km/h", seconds=2.0)
+        logger.info(f"限速调整为: {self.max_speed_kmh} km/h")
+
+    def toggle_speed_limit(self):
+        """切换限速功能启用/禁用"""
+        self.speed_limit_enabled = not self.speed_limit_enabled
+        status = "启用" if self.speed_limit_enabled else "禁用"
+        self.hud.notification(f"限速功能{status}", seconds=2.0)
+        logger.info(f"限速功能{status}，当前限速值: {self.max_speed_kmh} km/h")
+
     def reset_vehicle(self):
         """重置车辆到最近的生成点"""
         if not self.player:
@@ -416,12 +501,15 @@ class World(object):
 
 # ========== 键盘控制 ==========
 class KeyboardControl(object):
+
     def __init__(self, world):
         self.world = world
         self.hud = world.hud
-        # 新增：更新提示信息，加入F键说明
-        self.hud.notification("按R重置车辆 | 按H查看帮助 | 按F保存状态快照 | 按ESC退出", seconds=4.0)
-        self.snapshot_triggered = False  # 快照触发标记
+        self.hud.notification(
+            "R重置 | H帮助 | F快照 | P暂停 | W天气 | S限速 | +/-调限速 | ESC退出",
+            seconds=5.0
+        )
+        self.snapshot_triggered = False
 
     def parse_events(self):
         for event in pygame.event.get():
@@ -430,15 +518,24 @@ class KeyboardControl(object):
             if event.type == pygame.KEYUP:
                 if self._is_quit_shortcut(event.key):
                     return True
-                # R键重置车辆
                 if event.key == K_r:
                     self.world.reset_vehicle()
-                # H键切换帮助
                 if event.key == K_h:
                     self.hud.help.toggle()
-                # 新增：F键保存车辆状态快照
                 if event.key == K_f:
                     self.snapshot_triggered = True
+                if event.key == K_p:
+                    self.world.is_paused = not self.world.is_paused
+                    status = "已暂停" if self.world.is_paused else "已恢复"
+                    self.hud.notification(f"自动驾驶{status}", seconds=2.0)
+                if event.key == K_w:
+                    self.world.next_weather()
+                if event.key == K_s:
+                    self.world.toggle_speed_limit()
+                if event.key == K_EQUALS:
+                    self.world.adjust_speed_limit(5)
+                if event.key == K_MINUS:
+                    self.world.adjust_speed_limit(-5)
         return False
 
     @staticmethod
@@ -447,6 +544,7 @@ class KeyboardControl(object):
 
 # ========== HUD & 传感器类 ==========
 class HUD(object):
+
     def __init__(self, width, height):
         self.dim = (width, height)
         font = pygame.font.Font(pygame.font.get_default_font(), 20)
@@ -457,7 +555,6 @@ class HUD(object):
         mono = pygame.font.match_font(mono)
         self._font_mono = pygame.font.Font(mono, 12 if os.name == 'nt' else 14)
         self._notifications = FadingText(font, (width, 40), (0, height - 40))
-        # 新增：更新帮助文本，加入F键说明
         self.help = HelpText(pygame.font.Font(mono, 24), width, height)
         self.server_fps = 0
         self.frame = 0
@@ -496,12 +593,18 @@ class HUD(object):
             'Vehicle: % 20s' % get_actor_display_name(world.player, truncate=20),
             'Map:     % 20s' % world.map.name,
             'Simulation time: % 12s' % datetime.timedelta(seconds=int(self.simulation_time)),
+            'Status:  % 16s' % ('PAUSED' if world.is_paused else 'RUNNING'),
             '',
             'Speed:   % 15.0f km/h' % (3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)),
             u'Heading:% 16.0f\N{DEGREE SIGN} % 2s' % (t.rotation.yaw, heading),
             'Location:% 20s' % ('(% 5.1f, % 5.1f)' % (t.location.x, t.location.y)),
             'GNSS:% 24s' % ('(% 2.6f, % 3.6f)' % (world.gnss_sensor.lat, world.gnss_sensor.lon)),
             'Height:  % 18.0f m' % t.location.z,
+            'Distance to target: % 10.1f m' % world.get_distance_to_target(),
+            '',
+            'Speed Limit:',
+            '  Max: % 14d km/h' % world.max_speed_kmh,
+            '  Enabled: % 12s' % ('ON' if world.speed_limit_enabled else 'OFF'),
             '']
 
         if isinstance(c, carla.VehicleControl):
@@ -582,7 +685,9 @@ class HUD(object):
         self._notifications.render(display)
         self.help.render(display)
 
+
 class FadingText(object):
+
     def __init__(self, font, dim, pos):
         self.font = font
         self.dim = dim
@@ -605,9 +710,10 @@ class FadingText(object):
     def render(self, display):
         display.blit(self.surface, self.pos)
 
+
 class HelpText(object):
+
     def __init__(self, font, width, height):
-        # 新增：帮助文本加入F键说明
         lines = [
             "CARLA 自动控制客户端",
             "",
@@ -615,12 +721,20 @@ class HelpText(object):
             "ESC / Ctrl+Q - 退出程序",
             "R - 重置车辆到最近生成点",
             "H - 显示/隐藏本帮助",
-            "F - 保存当前车辆状态快照（JSON格式）",  # 新增
+            "F - 保存当前车辆状态快照（JSON格式）",
+            "P - 暂停/恢复自动驾驶",
+            "W - 手动切换天气模式",
+            "S - 切换限速功能启用/禁用",
+            "+ / = - 提高限速（每次+5km/h）",
+            "- - 降低限速（每次-5km/h）",
             "",
             "启动参数：",
             "-l / --loop - 到达目标后自动设置新目的地",
             "-b / --behavior - 智能体行为: cautious/normal/aggressive",
-            "-a / --agent - 智能体类型: Behavior/Basic"
+            "-a / --agent - 智能体类型: Behavior/Basic",
+            "--auto-weather - 启用自动定时切换天气",
+            "--weather-interval - 自动天气切换间隔（秒，默认30）",
+            "--max-speed - 初始最大限速（km/h，默认60）"
         ]
         self.font = font
         self.dim = (680, len(lines) * 22 + 12)
@@ -640,7 +754,9 @@ class HelpText(object):
         if self._render:
             display.blit(self.surface, self.pos)
 
+
 class CollisionSensor(object):
+
     def __init__(self, parent_actor, hud):
         self.sensor = None
         self.history = []
@@ -671,7 +787,9 @@ class CollisionSensor(object):
         if len(self.history) > 4000:
             self.history.pop(0)
 
+
 class LaneInvasionSensor(object):
+
     def __init__(self, parent_actor, hud):
         self.sensor = None
         self._parent = parent_actor
@@ -691,7 +809,9 @@ class LaneInvasionSensor(object):
         text = ['%r' % str(x).split()[-1] for x in lane_types]
         self.hud.notification('Crossed line %s' % ' and '.join(text))
 
+
 class GnssSensor(object):
+
     def __init__(self, parent_actor):
         self.sensor = None
         self._parent = parent_actor
@@ -711,7 +831,9 @@ class GnssSensor(object):
         self.lat = event.latitude
         self.lon = event.longitude
 
+
 class CameraManager(object):
+
     def __init__(self, parent_actor, hud, gamma_correction):
         self.sensor = None
         self.surface = None
@@ -818,7 +940,7 @@ def game_loop(args):
     world = None
     driving_logger = None
     trajectory_logger = None
-    snapshot_logger = None  # 新增：快照日志器
+    snapshot_logger = None
     tot_target_reached = 0
 
     try:
@@ -836,7 +958,7 @@ def game_loop(args):
         # 初始化各类日志器
         driving_logger = DrivingLogger()
         trajectory_logger = TrajectoryLogger()
-        snapshot_logger = StateSnapshotLogger()  # 新增：初始化快照日志器
+        snapshot_logger = StateSnapshotLogger()
         logger.info(f"行驶日志已创建: {driving_logger.get_file_path()}")
         logger.info(f"轨迹日志已创建: {trajectory_logger.get_file_path()}")
         logger.info(f"状态快照将保存至: {Path(LOG_SAVE_DIR)/'snapshots'}")
@@ -845,9 +967,9 @@ def game_loop(args):
         if args.agent == "Basic":
             agent = BasicAgent(world.player)
             spawn_point = world.map.get_spawn_points()[0]
-            agent.set_destination((spawn_point.location.x,
-                                   spawn_point.location.y,
-                                   spawn_point.location.z))
+            destination = spawn_point.location
+            agent.set_destination((destination.x, destination.y, destination.z))
+            world.target_location = destination
         else:
             agent = BehaviorAgent(world.player, behavior=args.behavior)
             spawn_points = world.map.get_spawn_points()
@@ -855,6 +977,7 @@ def game_loop(args):
             current_location = world.player.get_location()
             destination = get_random_destination(current_location, spawn_points)
             agent.set_destination(destination, start_location=current_location)
+            world.target_location = destination
 
         clock = pygame.time.Clock()
 
@@ -863,12 +986,12 @@ def game_loop(args):
             if controller.parse_events():
                 return
 
-            # 新增：处理F键触发的快照保存
+            # 处理快照保存
             if controller.snapshot_triggered:
                 snap_path, snap_id = snapshot_logger.save_snapshot(world, tot_target_reached)
                 world.hud.notification(f"已保存快照 #{snap_id}: {os.path.basename(snap_path)}", seconds=3.0)
                 logger.info(f"保存车辆状态快照 #{snap_id}: {snap_path}")
-                controller.snapshot_triggered = False  # 重置触发标记
+                controller.snapshot_triggered = False
 
             if not world.world.wait_for_tick(10.0):
                 continue
@@ -881,44 +1004,56 @@ def game_loop(args):
             driving_logger.record_frame(world, tot_target_reached)
             trajectory_logger.record_frame(world, tot_target_reached)
 
-            # 智能体逻辑
-            if args.agent == "Basic":
-                control = agent.run_step()
-                control.manual_gear_shift = False
-                world.player.apply_control(control)
-            else:
-                if len(agent.get_local_planner()._waypoints_queue) < MIN_WAYPOINTS_QUEUE:
-                    if args.loop:
-                        spawn_points = world.map.get_spawn_points()
-                        random.shuffle(spawn_points)
-                        current_loc = world.player.get_location()
-                        new_dest = get_random_destination(current_loc, spawn_points)
-                        agent.set_destination(new_dest, start_location=current_loc)
-                        agent.run_step()
+            # 暂停状态下跳过导航控制
+            if not world.is_paused:
+                # 自动天气切换
+                if world.auto_weather:
+                    elapsed = (datetime.datetime.now() - world.last_weather_switch).total_seconds()
+                    if elapsed >= world.weather_interval:
+                        world.next_weather()
 
-                        tot_target_reached += 1
-                        world.hud.notification(f"目标已到达 {tot_target_reached} 次", seconds=4.0)
-                        logger.info(f"到达第 {tot_target_reached} 个目标")
-                    else:
-                        print("Target reached, mission accomplished...")
-                        break
+                if args.agent == "Basic":
+                    control = agent.run_step()
+                    control.manual_gear_shift = False
+                    control = world.apply_speed_limit(control)
+                    world.player.apply_control(control)
+                else:
+                    # 使用官方done()接口判定到达
+                    if agent.done():
+                        if args.loop:
+                            spawn_points = world.map.get_spawn_points()
+                            random.shuffle(spawn_points)
+                            current_loc = world.player.get_location()
+                            new_dest = get_random_destination(current_loc, spawn_points)
+                            agent.set_destination(new_dest, start_location=current_loc)
+                            world.target_location = new_dest
+                            agent.run_step()
 
-                speed_limit = world.player.get_speed_limit()
-                agent.get_local_planner().set_speed(speed_limit)
-                control = agent.run_step()
-                world.player.apply_control(control)
+                            tot_target_reached += 1
+                            world.hud.notification(f"目标已到达 {tot_target_reached} 次", seconds=4.0)
+                            logger.info(f"到达第 {tot_target_reached} 个目标")
+                        else:
+                            print("Target reached, mission accomplished...")
+                            break
+
+                    speed_limit = world.player.get_speed_limit()
+                    agent.get_local_planner().set_speed(speed_limit)
+                    control = agent.run_step()
+                    control = world.apply_speed_limit(control)
+                    world.player.apply_control(control)
 
     finally:
         if world is not None:
             world.destroy()
         pygame.quit()
-        # 保存日志
+
+        # 收尾日志
         if driving_logger:
             logger.info(f"行驶日志已保存至: {driving_logger.get_file_path()}")
         if trajectory_logger:
             trajectory_logger.finalize()
             logger.info(f"轨迹日志已保存至: {trajectory_logger.get_file_path()}")
-        if snapshot_logger:  # 新增：快照日志器收尾
+        if snapshot_logger:
             logger.info(f"共保存 {snapshot_logger.snapshot_count} 个车辆状态快照")
 
 # ========== 主函数 ==========
@@ -935,6 +1070,9 @@ def main():
                            default='normal', help='智能体行为模式')
     argparser.add_argument("-a", "--agent", type=str, choices=["Behavior", "Basic"],
                            default="Behavior", help="智能体类型")
+    argparser.add_argument('--auto-weather', action='store_true', help='启用自动定时切换天气')
+    argparser.add_argument('--weather-interval', default=30, type=int, help='自动天气切换间隔（秒）')
+    argparser.add_argument('--max-speed', default=60, type=int, help='初始最大限速 km/h')
     argparser.add_argument('-s', '--seed', default=None, type=int, help='随机种子')
 
     args = argparser.parse_args()
@@ -950,6 +1088,7 @@ def main():
         game_loop(args)
     except KeyboardInterrupt:
         print('\nCancelled by user. Bye!')
+
 
 if __name__ == '__main__':
     main()
